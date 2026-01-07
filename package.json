@@ -1,0 +1,48 @@
+{
+  "name": "guild-reputation-engine",
+  "version": "1.0.0",
+  "description": "On-chain reputation system for Gaming Guild DAOs (YGG, Merit Circle, Avocado, etc.)",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/api/server.js",
+    "dev": "ts-node src/api/server.ts",
+    "score": "ts-node src/index.ts score",
+    "serve": "ts-node src/index.ts serve",
+    "test": "echo \"Tests coming soon\" && exit 0"
+  },
+  "keywords": [
+    "dao",
+    "reputation",
+    "gaming",
+    "guild",
+    "web3",
+    "blockchain",
+    "ygg",
+    "merit-circle",
+    "p2e",
+    "play-to-earn"
+  ],
+  "author": "PineOT (Tobias)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/PineOT/guild-reputation-engine"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/node": "^25.0.3",
+    "axios": "^1.13.2",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
+    "ethers": "^6.16.0",
+    "express": "^5.2.1",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  }
+}

@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Guild Reputation Engine - Dashboard Demo</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; }
+    .gradient-bg { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
+    .glow { box-shadow: 0 0 40px rgba(102, 126, 234, 0.4); }
+    @keyframes pulse-glow { 0%, 100% { box-shadow: 0 0 20px rgba(102, 126, 234, 0.4); } 50% { box-shadow: 0 0 40px rgba(102, 126, 234, 0.8); } }
+    .pulse-glow { animation: pulse-glow 2s infinite; }
+    @keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }
+    .float { animation: float 3s ease-in-out infinite; }
+  </style>
+</head>
+<body class="bg-gray-900 text-white min-h-screen">
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+
+    const generateMockScore = (address) => {
+      const hash = address.split('').reduce((a, b) => ((a << 5) - a) + b.charCodeAt(0), 0);
+      const seed = Math.abs(hash);
+      const gaming = 500 + (seed % 2000);
+      const governance = 300 + (seed % 1500);
+      const community = 200 + (seed % 1000);
+      const treasury = 100 + (seed % 800);
+      const scholarship = (seed % 2) === 0 ? 100 + (seed % 600) : 0;
+      const mentorship = 50 + (seed % 400);
+      const total = gaming + governance + community + treasury + scholarship + mentorship;
+      const getTier = (score) => {
+        if (score >= 50000) return 'grandmaster';
+        if (score >= 25000) return 'master';
+        if (score >= 10000) return 'diamond';
+        if (score >= 5000) return 'platinum';
+        if (score >= 2500) return 'gold';
+        if (score >= 1000) return 'silver';
+        return 'bronze';
+      };
+      const badges = [];
+      if (gaming > 1500) badges.push({ id: 'veteran', name: 'Veteran Player', rarity: 'rare', icon: '🎮' });
+      if (governance > 1000) badges.push({ id: 'voter', name: 'Active Voter', rarity: 'rare', icon: '🗳️' });
+      if (community > 700) badges.push({ id: 'social', name: 'Social Butterfly', rarity: 'uncommon', icon: '🦋' });
+      if (scholarship > 400) badges.push({ id: 'mentor', name: 'Mentor Master', rarity: 'epic', icon: '👨‍🏫' });
+      if (total > 4000) badges.push({ id: 'elite', name: 'Elite Member', rarity: 'epic', icon: '⭐' });
+      if (total > 8000) badges.push({ id: 'legend', name: 'Guild Legend', rarity: 'legendary', icon: '👑' });
+      return { address, totalScore: total, tier: getTier(total), breakdown: { gaming, governance, community, treasury, scholarship, mentorship }, badges, rank: Math.floor(seed % 100) + 1, percentile: Math.min(99, Math.floor(total / 100)) };
+    };
+
+    const TierBadge = ({ tier }) => {
+      const colors = { bronze: 'from-amber-700 to-amber-900', silver: 'from-gray-300 to-gray-500', gold: 'from-yellow-400 to-yellow-600', platinum: 'from-cyan-200 to-cyan-400', diamond: 'from-blue-300 to-purple-400', master: 'from-red-500 to-pink-600', grandmaster: 'from-purple-500 to-indigo-700' };
+      return <span className={`px-3 py-1 rounded-full text-xs font-bold uppercase bg-gradient-to-r ${colors[tier]} text-white shadow-lg`}>{tier}</span>;
+    };
+
+    const ScoreCard = ({ label, value, max, color, icon }) => (
+      <div className="bg-gray-800/50 rounded-xl p-4 border border-gray-700">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-gray-400 text-sm flex items-center gap-2"><span>{icon}</span>{label}</span>
+          <span className="font-bold text-lg">{value.toLocaleString()}</span>
+        </div>
+        <div className="h-2 bg-gray-700 rounded-full overflow-hidden">
+          <div className={`h-full rounded-full ${color}`} style={{ width: `${Math.min((value / max) * 100, 100)}%` }}/>
+        </div>
+      </div>
+    );
+
+    const BadgeCard = ({ badge }) => {
+      const colors = { common: 'border-gray-500', uncommon: 'border-green-500', rare: 'border-blue-500', epic: 'border-purple-500', legendary: 'border-yellow-500' };
+      const text = { common: 'text-gray-400', uncommon: 'text-green-400', rare: 'text-blue-400', epic: 'text-purple-400', legendary: 'text-yellow-400' };
+      return (
+        <div className={`rounded-lg p-3 border-2 ${colors[badge.rarity]} bg-gray-800/50 flex items-center gap-3`}>
+          <span className="text-3xl">{badge.icon}</span>
+          <div><div className="font-semibold">{badge.name}</div><div className={`text-xs capitalize ${text[badge.rarity]}`}>{badge.rarity}</div></div>
+        </div>
+      );
+    };
+
+    const LeaderboardRow = ({ rank, address, score, tier, highlighted }) => (
+      <div className={`flex items-center justify-between py-3 px-4 rounded-lg mb-2 ${highlighted ? 'bg-purple-900/50 border border-purple-500' : 'bg-gray-800/30'}`}>
+        <div className="flex items-center gap-4">
+          <span className={`w-8 text-center font-bold ${rank <= 3 ? 'text-2xl' : 'text-gray-500'}`}>{rank <= 3 ? ['🥇', '🥈', '🥉'][rank - 1] : `#${rank}`}</span>
+          <span className="font-mono text-sm">{address.slice(0, 6)}...{address.slice(-4)}</span>
+        </div>
+        <div className="flex items-center gap-4"><TierBadge tier={tier} /><span className="font-bold w-20 text-right">{score.toLocaleString()}</span></div>
+      </div>
+    );
+
+    const App = () => {
+      const [address, setAddress] = useState('');
+      const [score, setScore] = useState(null);
+      const [loading, setLoading] = useState(false);
+      const [leaderboard, setLeaderboard] = useState([]);
+
+      useEffect(() => {
+        const addrs = ['0x1234567890abcdef1234567890abcdef12345678', '0xabcdef1234567890abcdef1234567890abcdef12', '0x9876543210fedcba9876543210fedcba98765432', '0xfedcba9876543210fedcba9876543210fedcba98', '0x5555555555555555555555555555555555555555'];
+        setLeaderboard(addrs.map(a => generateMockScore(a)).sort((a, b) => b.totalScore - a.totalScore).map((s, i) => ({ ...s, rank: i + 1 })));
+      }, []);
+
+      const handleLookup = () => { if (!address) return; setLoading(true); setTimeout(() => { setScore(generateMockScore(address)); setLoading(false); }, 600); };
+      const handleDemo = () => { const demo = '0x' + Array(40).fill(0).map(() => Math.floor(Math.random() * 16).toString(16)).join(''); setAddress(demo); setLoading(true); setTimeout(() => { setScore(generateMockScore(demo)); setLoading(false); }, 600); };
+
+      return (
+        <div className="min-h-screen pb-12">
+          <header className="gradient-bg py-8 px-6">
+            <div className="max-w-6xl mx-auto flex items-center justify-between">
+              <div><h1 className="text-3xl font-bold mb-2"><span className="float inline-block">🎮</span> Guild Reputation Engine</h1><p className="text-white/80">On-chain reputation for Gaming Guild DAOs</p></div>
+              <div className="text-right hidden md:block"><div className="text-sm text-white/60">Built by</div><div className="font-bold text-lg">PineOT</div></div>
+            </div>
+          </header>
+
+          <div className="max-w-6xl mx-auto px-6 py-8">
+            <div className="bg-gray-800 rounded-2xl p-6 glow">
+              <h2 className="text-xl font-bold mb-4">🔍 Lookup Reputation Score</h2>
+              <div className="flex flex-col md:flex-row gap-4">
+                <input type="text" placeholder="Enter wallet address (0x...)" value={address} onChange={(e) => setAddress(e.target.value)} onKeyPress={(e) => e.key === 'Enter' && handleLookup()} className="flex-1 bg-gray-700 rounded-xl px-4 py-3 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 font-mono text-sm"/>
+                <div className="flex gap-3">
+                  <button onClick={handleLookup} disabled={loading || !address} className="flex-1 md:flex-none bg-gradient-to-r from-purple-600 to-indigo-600 px-8 py-3 rounded-xl font-semibold hover:opacity-90 disabled:opacity-50">{loading ? 'Loading...' : 'Lookup'}</button>
+                  <button onClick={handleDemo} disabled={loading} className="flex-1 md:flex-none bg-gray-700 px-6 py-3 rounded-xl font-semibold hover:bg-gray-600">🎲 Demo</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <main className="max-w-6xl mx-auto px-6">
+            {score ? (
+              <div className="grid lg:grid-cols-3 gap-8">
+                <div className="lg:col-span-2 space-y-6">
+                  <div className="bg-gray-800 rounded-2xl p-8 pulse-glow">
+                    <div className="flex flex-col md:flex-row md:items-start justify-between gap-4 mb-6">
+                      <div><div className="text-gray-400 text-sm mb-1">Total Reputation Score</div><div className="text-5xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">{score.totalScore.toLocaleString()}</div></div>
+                      <div className="text-left md:text-right"><TierBadge tier={score.tier} /><div className="mt-2 text-gray-400 text-sm">Top {100 - score.percentile}% • Rank #{score.rank}</div></div>
+                    </div>
+                    <div className="font-mono text-sm text-gray-400 bg-gray-900/50 rounded-lg p-3 break-all">{score.address}</div>
+                  </div>
+
+                  <div className="bg-gray-800 rounded-2xl p-6">
+                    <h3 className="text-xl font-bold mb-4">📊 Score Breakdown</h3>
+                    <div className="grid md:grid-cols-2 gap-4">
+                      <ScoreCard label="Gaming" value={score.breakdown.gaming} max={3000} color="bg-gradient-to-r from-green-500 to-emerald-500" icon="🎮"/>
+                      <ScoreCard label="Governance" value={score.breakdown.governance} max={2500} color="bg-gradient-to-r from-blue-500 to-cyan-500" icon="🗳️"/>
+                      <ScoreCard label="Community" value={score.breakdown.community} max={2000} color="bg-gradient-to-r from-purple-500 to-pink-500" icon="👥"/>
+                      <ScoreCard label="Treasury" value={score.breakdown.treasury} max={1500} color="bg-gradient-to-r from-yellow-500 to-orange-500" icon="💰"/>
+                      <ScoreCard label="Scholarship" value={score.breakdown.scholarship} max={1000} color="bg-gradient-to-r from-red-500 to-rose-500" icon="🎓"/>
+                      <ScoreCard label="Mentorship" value={score.breakdown.mentorship} max={800} color="bg-gradient-to-r from-indigo-500 to-violet-500" icon="🤝"/>
+                    </div>
+                  </div>
+
+                  <div className="bg-gray-800 rounded-2xl p-6">
+                    <h3 className="text-xl font-bold mb-4">🏅 Badges Earned ({score.badges.length})</h3>
+                    {score.badges.length > 0 ? (
+                      <div className="grid md:grid-cols-2 gap-3">{score.badges.map(b => <BadgeCard key={b.id} badge={b} />)}</div>
+                    ) : (
+                      <div className="text-gray-500 text-center py-8 bg-gray-900/30 rounded-xl"><div className="text-4xl mb-2">🎯</div>No badges yet. Keep contributing!</div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="space-y-6">
+                  <div className="bg-gray-800 rounded-2xl p-6">
+                    <h3 className="text-xl font-bold mb-4">🏆 Leaderboard</h3>
+                    {leaderboard.slice(0, 5).map(e => <LeaderboardRow key={e.address} rank={e.rank} address={e.address} score={e.totalScore} tier={e.tier} highlighted={e.address === score.address}/>)}
+                  </div>
+
+                  <div className="bg-gray-800 rounded-2xl p-6">
+                    <h3 className="text-xl font-bold mb-4">📈 Tier System</h3>
+                    <div className="space-y-2 text-sm">
+                      {[{ t: 'grandmaster', m: '50k+', c: 'text-purple-400', i: '💎' }, { t: 'master', m: '25k+', c: 'text-red-400', i: '🔥' }, { t: 'diamond', m: '10k+', c: 'text-cyan-300', i: '💠' }, { t: 'platinum', m: '5k+', c: 'text-gray-200', i: '⚪' }, { t: 'gold', m: '2.5k+', c: 'text-yellow-400', i: '🌟' }, { t: 'silver', m: '1k+', c: 'text-gray-400', i: '🥈' }, { t: 'bronze', m: '0+', c: 'text-amber-600', i: '🥉' }].map(x => (
+                        <div key={x.t} className={`flex justify-between items-center py-2 px-3 rounded-lg ${score.tier === x.t ? 'bg-purple-900/30 border border-purple-500' : 'border-b border-gray-700'}`}>
+                          <span className={`font-semibold capitalize ${x.c} flex items-center gap-2`}>{x.i} {x.t}</span>
+                          <span className="text-gray-500">{x.m}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="text-center py-16">
+                <div className="text-8xl mb-6 float">🎮</div>
+                <h2 className="text-3xl font-bold mb-4">Check Your Guild Reputation</h2>
+                <p className="text-gray-400 mb-8 max-w-md mx-auto">Enter your wallet address to see your reputation score, tier, and badges.</p>
+                <button onClick={handleDemo} className="bg-gradient-to-r from-purple-600 to-indigo-600 px-8 py-4 rounded-xl font-semibold text-lg hover:opacity-90">🎲 Try Demo</button>
+              </div>
+            )}
+          </main>
+
+          <footer className="max-w-6xl mx-auto px-6 mt-16 pt-8 border-t border-gray-800 text-center text-gray-500 text-sm">
+            Guild Reputation Engine v1.0.0 • Built for Gaming Guild DAOs by PineOT
+          </footer>
+        </div>
+      );
+    };
+
+    ReactDOM.render(<App />, document.getElementById('root'));
+  </script>
+</body>
+</html>
