@@ -10,7 +10,8 @@
     "dev": "ts-node src/api/server.ts",
     "score": "ts-node src/index.ts score",
     "serve": "ts-node src/index.ts serve",
-    "test": "echo \"Tests coming soon\" && exit 0"
+    "test": "echo \"Tests coming soon\" && exit 0",
+    "postinstall": "npm run build"
   },
   "keywords": [
     "dao",

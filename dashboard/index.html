@@ -23,7 +23,12 @@
   <script type="text/babel">
     const { useState, useEffect } = React;
 
-    const API_BASE = 'http://localhost:3000';
+    // API URL: Uses window.API_URL if set, otherwise detects from current host or falls back to localhost
+    const API_BASE = window.API_URL || (
+      window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+        ? 'http://localhost:3000'
+        : window.location.origin
+    );
     const DEMO_ADDRESS = '0x2B888954421b424C5D3D9Ce9bB67c9bD47537d12'; // Active voter with real data
 
     const TierBadge = ({ tier }) => {
