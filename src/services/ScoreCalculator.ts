@@ -1,10 +1,10 @@
 /**
  * Guild Reputation Score Calculator
  * Core scoring engine for Gaming Guild DAOs
- * 
+ *
  * This is the heart of the system - calculates reputation scores
  * from various metrics using configurable weights.
- * 
+ *
  * @author PineOT (Tobias)
  */
 
@@ -24,6 +24,8 @@ import {
   BadgeCategory,
   BadgeRarity,
 } from '../types';
+import { getArbitrumData } from '../providers/ArbitrumProvider';
+import { getSnapshotData } from '../providers/SnapshotProvider';
 
 export class GuildScoreCalculator implements ScoreProvider {
   private weights: WeightConfig;
@@ -357,6 +359,151 @@ export class GuildScoreCalculator implements ScoreProvider {
   calculateChange(currentScore: number, previousScore: number): number {
     if (previousScore === 0) return 100;
     return ((currentScore - previousScore) / previousScore) * 100;
+  }
+
+  /**
+   * Calculate reputation score using real on-chain and governance data
+   * Fetches data from Arbitrum blockchain and Snapshot governance
+   */
+  async calculateRealScore(address: string, guildId?: string): Promise<{
+    score: ReputationScore;
+    dataSources: {
+      arbitrum: any;
+      snapshot: any;
+    };
+    breakdown: {
+      governance: { source: string; calculation: string };
+      treasury: { source: string; calculation: string };
+      gaming: { source: string };
+      community: { source: string };
+      scholarship: { source: string };
+    };
+  }> {
+    // Fetch real data from providers
+    const [arbitrumData, snapshotData] = await Promise.all([
+      getArbitrumData(address),
+      getSnapshotData(address),
+    ]);
+
+    // Calculate governance score from real Snapshot data
+    // Formula: (total votes * 10) + (unique spaces * 50)
+    const governanceScore = Math.min(
+      (snapshotData.totalVotes * 10) + (snapshotData.spacesVotedIn.length * 50),
+      5000 // Max governance score
+    );
+
+    // Calculate treasury score from real Arbitrum data
+    // For now, use raw token amounts (in production, convert to USD)
+    const arbBalanceNum = parseFloat(arbitrumData.arbBalanceFormatted);
+    const magicBalanceNum = parseFloat(arbitrumData.magicBalanceFormatted);
+    const treasuryScore = Math.min(
+      (arbBalanceNum * 10) + (magicBalanceNum * 5), // Weight ARB higher than MAGIC
+      5000 // Max treasury score
+    );
+
+    // Use mock data for gaming, community, and scholarship (until those providers are built)
+    const mockGamingScore = 500;
+    const mockCommunityScore = 300;
+    const mockScholarshipScore = 200;
+
+    // Build score breakdown
+    const breakdown: ScoreBreakdown = {
+      governance: Math.round(governanceScore),
+      treasury: Math.round(treasuryScore),
+      gaming: mockGamingScore,
+      community: mockCommunityScore,
+      scholarship: mockScholarshipScore,
+      mentorship: 100, // Mock
+    };
+
+    const totalScore = Object.values(breakdown).reduce((sum, val) => sum + val, 0);
+    const tier = this.determineTier(totalScore);
+
+    // Calculate badges from real data
+    const badges: Badge[] = [];
+    const now = new Date();
+
+    // Governance badges from Snapshot data
+    if (snapshotData.totalVotes >= 50) {
+      badges.push(this.createBadge(
+        'active-voter',
+        'Active Voter',
+        `Cast ${snapshotData.totalVotes} votes on Snapshot`,
+        'governance',
+        'rare',
+        now
+      ));
+    }
+    if (snapshotData.spacesVotedIn.length >= 5) {
+      badges.push(this.createBadge(
+        'multi-dao-participant',
+        'Multi-DAO Participant',
+        `Voted in ${snapshotData.spacesVotedIn.length} different DAOs`,
+        'governance',
+        'epic',
+        now
+      ));
+    }
+
+    // Treasury badges from Arbitrum data
+    if (arbBalanceNum >= 100) {
+      badges.push(this.createBadge(
+        'arb-holder',
+        'ARB Holder',
+        `Holds ${arbBalanceNum.toFixed(2)} ARB tokens`,
+        'governance',
+        'uncommon',
+        now
+      ));
+    }
+    if (arbitrumData.transactionCount >= 100) {
+      badges.push(this.createBadge(
+        'arbitrum-veteran',
+        'Arbitrum Veteran',
+        `${arbitrumData.transactionCount} transactions on Arbitrum`,
+        'community',
+        'rare',
+        now
+      ));
+    }
+
+    const score: ReputationScore = {
+      address,
+      totalScore: Math.round(totalScore * 100) / 100,
+      breakdown,
+      tier,
+      badges,
+      lastUpdated: new Date(),
+      metadata: {
+        guildId: guildId || 'default',
+        memberId: address,
+        joinDate: new Date(),
+        totalGamesPlayed: 0, // Mock
+        currentStreak: 0, // Mock
+        peakScore: totalScore,
+      },
+    };
+
+    return {
+      score,
+      dataSources: {
+        arbitrum: arbitrumData,
+        snapshot: snapshotData,
+      },
+      breakdown: {
+        governance: {
+          source: 'Snapshot GraphQL API',
+          calculation: `(${snapshotData.totalVotes} votes * 10) + (${snapshotData.spacesVotedIn.length} spaces * 50) = ${governanceScore}`,
+        },
+        treasury: {
+          source: 'Arbitrum One RPC',
+          calculation: `(${arbBalanceNum.toFixed(2)} ARB * 10) + (${magicBalanceNum.toFixed(2)} MAGIC * 5) = ${treasuryScore.toFixed(2)}`,
+        },
+        gaming: { source: 'Mock data (placeholder)' },
+        community: { source: 'Mock data (placeholder)' },
+        scholarship: { source: 'Mock data (placeholder)' },
+      },
+    };
   }
 }
 

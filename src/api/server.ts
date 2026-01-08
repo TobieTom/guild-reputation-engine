@@ -1,12 +1,12 @@
 /**
  * Guild Reputation Engine - REST API Server
- * 
+ *
  * Provides endpoints for:
  * - Fetching individual reputation scores
  * - Leaderboards
  * - Badge queries
  * - Guild configuration
- * 
+ *
  * @author PineOT (Tobias)
  */
 
@@ -14,6 +14,8 @@ import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import { GuildScoreCalculator } from '../services/ScoreCalculator';
 import { MockDataProvider, AggregatedDataProvider } from '../providers/DataProviders';
+import { getArbitrumData } from '../providers/ArbitrumProvider';
+import { getSnapshotData } from '../providers/SnapshotProvider';
 import {
   GuildConfig,
   ReputationScore,
@@ -21,14 +23,61 @@ import {
   DataProvider,
 } from '../types';
 
+// Configuration from environment variables
+const PORT = parseInt(process.env.PORT || '3000', 10);
+const NODE_ENV = process.env.NODE_ENV || 'development';
+const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
+const RATE_LIMIT_WINDOW_MS = parseInt(process.env.RATE_LIMIT_WINDOW_MS || '60000', 10);
+const RATE_LIMIT_MAX_REQUESTS = parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '100', 10);
+
 const app = express();
-app.use(cors());
-app.use(express.json());
 
-// ============================================
-// IN-MEMORY STORAGE (Replace with DB in prod)
-// ============================================
+// CORS configuration
+app.use(cors({
+  origin: CORS_ORIGIN,
+  methods: ['GET', 'POST'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+}));
 
+app.use(express.json({ limit: '10kb' })); // Limit request body size
+
+// Simple in-memory rate limiter
+const rateLimitMap = new Map<string, { count: number; resetTime: number }>();
+
+const rateLimit = (req: Request, res: Response, next: NextFunction) => {
+  const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
+  const now = Date.now();
+
+  const clientData = rateLimitMap.get(clientIp);
+
+  if (!clientData || now > clientData.resetTime) {
+    rateLimitMap.set(clientIp, { count: 1, resetTime: now + RATE_LIMIT_WINDOW_MS });
+    return next();
+  }
+
+  if (clientData.count >= RATE_LIMIT_MAX_REQUESTS) {
+    return res.status(429).json({
+      error: 'Too many requests',
+      retryAfter: Math.ceil((clientData.resetTime - now) / 1000),
+    });
+  }
+
+  clientData.count++;
+  next();
+};
+
+// Apply rate limiting to all routes
+app.use(rateLimit);
+
+// Security headers
+app.use((req: Request, res: Response, next: NextFunction) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  next();
+});
+
+// In-memory storage (replace with database in production)
 const guildConfigs: Map<string, GuildConfig> = new Map();
 const scoreCache: Map<string, ReputationScore> = new Map();
 const providers: Map<string, DataProvider> = new Map();
@@ -36,17 +85,26 @@ const providers: Map<string, DataProvider> = new Map();
 // Default calculator instance
 const calculator = new GuildScoreCalculator();
 
-// ============================================
-// MIDDLEWARE
-// ============================================
+// Async handler wrapper
+const asyncHandler = (fn: (req: Request, res: Response, next: NextFunction) => Promise<void | Response>) =>
+  (req: Request, res: Response, next: NextFunction) => {
+    Promise.resolve(fn(req, res, next)).catch(next);
+  };
 
-const asyncHandler = (fn: Function) => (req: Request, res: Response, next: NextFunction) => {
-  Promise.resolve(fn(req, res, next)).catch(next);
-};
+// Input validation helpers
+function isValidAddress(address: string): boolean {
+  return typeof address === 'string' && /^0x[a-fA-F0-9]{40}$/.test(address.trim());
+}
 
-// ============================================
-// GUILD MANAGEMENT ENDPOINTS
-// ============================================
+function isValidGuildId(guildId: string): boolean {
+  return typeof guildId === 'string' && /^[a-zA-Z0-9_-]{1,64}$/.test(guildId.trim());
+}
+
+function sanitizeString(str: string): string {
+  return str.replace(/[<>]/g, '').substring(0, 200);
+}
+
+// Guild Management Endpoints
 
 /**
  * Register a new guild
@@ -54,14 +112,20 @@ const asyncHandler = (fn: Function) => (req: Request, res: Response, next: NextF
  */
 app.post('/api/guilds', asyncHandler(async (req: Request, res: Response) => {
   const config: GuildConfig = req.body;
-  
+
   if (!config.id || !config.name) {
-    return res.status(400).json({ error: 'Guild id and name are required' });
+    res.status(400).json({ error: 'Guild id and name are required' });
+    return;
   }
 
+  if (!isValidGuildId(config.id)) {
+    res.status(400).json({ error: 'Invalid guild ID format' });
+    return;
+  }
+
+  config.name = sanitizeString(config.name);
+
   guildConfigs.set(config.id, config);
-  
-  // Initialize provider (use mock for demo)
   providers.set(config.id, new MockDataProvider());
 
   res.status(201).json({
@@ -76,10 +140,17 @@ app.post('/api/guilds', asyncHandler(async (req: Request, res: Response) => {
  */
 app.get('/api/guilds/:guildId', (req: Request, res: Response) => {
   const { guildId } = req.params;
+
+  if (!isValidGuildId(guildId)) {
+    res.status(400).json({ error: 'Invalid guild ID format' });
+    return;
+  }
+
   const config = guildConfigs.get(guildId);
-  
+
   if (!config) {
-    return res.status(404).json({ error: 'Guild not found' });
+    res.status(404).json({ error: 'Guild not found' });
+    return;
   }
 
   res.json(config);
@@ -94,9 +165,7 @@ app.get('/api/guilds', (req: Request, res: Response) => {
   res.json({ guilds, total: guilds.length });
 });
 
-// ============================================
-// REPUTATION SCORE ENDPOINTS
-// ============================================
+// Reputation Score Endpoints
 
 /**
  * Get reputation score for an address
@@ -106,48 +175,49 @@ app.get('/api/guilds/:guildId/reputation/:address', asyncHandler(async (req: Req
   const { guildId, address } = req.params;
   const forceRefresh = req.query.refresh === 'true';
 
-  // Check cache first
-  const cacheKey = `${guildId}:${address.toLowerCase()}`;
+  if (!isValidGuildId(guildId)) {
+    res.status(400).json({ error: 'Invalid guild ID format' });
+    return;
+  }
+
+  if (!isValidAddress(address)) {
+    res.status(400).json({ error: 'Invalid wallet address format' });
+    return;
+  }
+
+  const normalizedAddress = address.toLowerCase();
+  const cacheKey = `${guildId}:${normalizedAddress}`;
+
   if (!forceRefresh && scoreCache.has(cacheKey)) {
     const cached = scoreCache.get(cacheKey)!;
     const cacheAge = Date.now() - cached.lastUpdated.getTime();
-    
+
     // Cache valid for 5 minutes
     if (cacheAge < 5 * 60 * 1000) {
-      return res.json({ score: cached, cached: true });
+      res.json({ score: cached, cached: true });
+      return;
     }
   }
 
-  // Get or create provider
   let provider = providers.get(guildId);
   if (!provider) {
-    // Auto-create mock provider if guild doesn't exist yet
     provider = new MockDataProvider();
     providers.set(guildId, provider);
   }
 
-  // Fetch all metrics
   const [gaming, governance, community, scholarship] = await Promise.all([
-    provider.fetchGamingMetrics(address, guildId),
-    provider.fetchGovernanceMetrics(address, guildId),
-    provider.fetchCommunityMetrics(address, guildId),
-    provider.fetchScholarshipMetrics(address, guildId),
+    provider.fetchGamingMetrics(normalizedAddress, guildId),
+    provider.fetchGovernanceMetrics(normalizedAddress, guildId),
+    provider.fetchCommunityMetrics(normalizedAddress, guildId),
+    provider.fetchScholarshipMetrics(normalizedAddress, guildId),
   ]);
 
-  // Calculate score
   const guildConfig = guildConfigs.get(guildId);
-  const customCalculator = guildConfig?.customWeights 
+  const customCalculator = guildConfig?.customWeights
     ? new GuildScoreCalculator(guildConfig.customWeights)
     : calculator;
 
-  const score = customCalculator.calculateScore(
-    gaming,
-    governance,
-    community,
-    scholarship
-  );
-
-  // Cache result
+  const score = customCalculator.calculateScore(gaming, governance, community, scholarship);
   scoreCache.set(cacheKey, score);
 
   res.json({
@@ -165,12 +235,26 @@ app.post('/api/guilds/:guildId/reputation/batch', asyncHandler(async (req: Reque
   const { guildId } = req.params;
   const { addresses } = req.body;
 
+  if (!isValidGuildId(guildId)) {
+    res.status(400).json({ error: 'Invalid guild ID format' });
+    return;
+  }
+
   if (!Array.isArray(addresses) || addresses.length === 0) {
-    return res.status(400).json({ error: 'addresses array is required' });
+    res.status(400).json({ error: 'addresses array is required' });
+    return;
   }
 
   if (addresses.length > 100) {
-    return res.status(400).json({ error: 'Maximum 100 addresses per batch' });
+    res.status(400).json({ error: 'Maximum 100 addresses per batch' });
+    return;
+  }
+
+  // Validate all addresses
+  const invalidAddresses = addresses.filter((addr: unknown) => !isValidAddress(addr as string));
+  if (invalidAddresses.length > 0) {
+    res.status(400).json({ error: 'Invalid address format in batch' });
+    return;
   }
 
   let provider = providers.get(guildId);
@@ -181,11 +265,12 @@ app.post('/api/guilds/:guildId/reputation/batch', asyncHandler(async (req: Reque
 
   const results = await Promise.all(
     addresses.map(async (address: string) => {
+      const normalizedAddress = address.toLowerCase();
       const [gaming, governance, community, scholarship] = await Promise.all([
-        provider!.fetchGamingMetrics(address, guildId),
-        provider!.fetchGovernanceMetrics(address, guildId),
-        provider!.fetchCommunityMetrics(address, guildId),
-        provider!.fetchScholarshipMetrics(address, guildId),
+        provider!.fetchGamingMetrics(normalizedAddress, guildId),
+        provider!.fetchGovernanceMetrics(normalizedAddress, guildId),
+        provider!.fetchCommunityMetrics(normalizedAddress, guildId),
+        provider!.fetchScholarshipMetrics(normalizedAddress, guildId),
       ]);
 
       return calculator.calculateScore(gaming, governance, community, scholarship);
@@ -195,9 +280,7 @@ app.post('/api/guilds/:guildId/reputation/batch', asyncHandler(async (req: Reque
   res.json({ scores: results });
 }));
 
-// ============================================
-// LEADERBOARD ENDPOINTS
-// ============================================
+// Leaderboard Endpoints
 
 /**
  * Get guild leaderboard
@@ -205,40 +288,46 @@ app.post('/api/guilds/:guildId/reputation/batch', asyncHandler(async (req: Reque
  */
 app.get('/api/guilds/:guildId/leaderboard', asyncHandler(async (req: Request, res: Response) => {
   const { guildId } = req.params;
-  const limit = Math.min(parseInt(req.query.limit as string) || 50, 100);
-  const offset = parseInt(req.query.offset as string) || 0;
+
+  if (!isValidGuildId(guildId)) {
+    res.status(400).json({ error: 'Invalid guild ID format' });
+    return;
+  }
+
+  const limitParam = parseInt(req.query.limit as string, 10);
+  const offsetParam = parseInt(req.query.offset as string, 10);
+  const limit = Math.min(isNaN(limitParam) ? 50 : limitParam, 100);
+  const offset = isNaN(offsetParam) ? 0 : Math.max(0, offsetParam);
   const category = req.query.category as string;
 
-  // Get all cached scores for this guild
   const guildScores: ReputationScore[] = [];
-  
+
   for (const [key, score] of scoreCache.entries()) {
     if (key.startsWith(`${guildId}:`)) {
       guildScores.push(score);
     }
   }
 
-  // Sort by total score (or category score)
+  const validCategories = ['gaming', 'governance', 'community', 'treasury', 'scholarship', 'mentorship'];
   let sorted: ReputationScore[];
-  if (category && ['gaming', 'governance', 'community', 'treasury', 'scholarship', 'mentorship'].includes(category)) {
-    sorted = guildScores.sort((a, b) => 
-      (b.breakdown as any)[category] - (a.breakdown as any)[category]
+
+  if (category && validCategories.includes(category)) {
+    sorted = guildScores.sort((a, b) =>
+      (b.breakdown as unknown as Record<string, number>)[category] - (a.breakdown as unknown as Record<string, number>)[category]
     );
   } else {
     sorted = guildScores.sort((a, b) => b.totalScore - a.totalScore);
   }
 
-  // Apply pagination
   const paginated = sorted.slice(offset, offset + limit);
 
-  // Transform to leaderboard entries
   const leaderboard: LeaderboardEntry[] = paginated.map((score, index) => ({
     rank: offset + index + 1,
     address: score.address,
-    displayName: undefined, // Would come from ENS/profile service
+    displayName: undefined,
     totalScore: score.totalScore,
     tier: score.tier,
-    change24h: 0, // Would need historical data
+    change24h: 0,
     topBadge: score.badges[0],
   }));
 
@@ -251,9 +340,7 @@ app.get('/api/guilds/:guildId/leaderboard', asyncHandler(async (req: Request, re
   });
 }));
 
-// ============================================
-// BADGE ENDPOINTS
-// ============================================
+// Badge Endpoints
 
 /**
  * Get all badges for an address
@@ -261,14 +348,26 @@ app.get('/api/guilds/:guildId/leaderboard', asyncHandler(async (req: Request, re
  */
 app.get('/api/guilds/:guildId/badges/:address', asyncHandler(async (req: Request, res: Response) => {
   const { guildId, address } = req.params;
+
+  if (!isValidGuildId(guildId)) {
+    res.status(400).json({ error: 'Invalid guild ID format' });
+    return;
+  }
+
+  if (!isValidAddress(address)) {
+    res.status(400).json({ error: 'Invalid wallet address format' });
+    return;
+  }
+
   const cacheKey = `${guildId}:${address.toLowerCase()}`;
-  
   const score = scoreCache.get(cacheKey);
+
   if (!score) {
-    return res.status(404).json({ 
+    res.status(404).json({
       error: 'Score not found. Fetch reputation first.',
-      hint: `GET /api/guilds/${guildId}/reputation/${address}`
+      hint: `GET /api/guilds/${guildId}/reputation/${address}`,
     });
+    return;
   }
 
   res.json({
@@ -284,7 +383,6 @@ app.get('/api/guilds/:guildId/badges/:address', asyncHandler(async (req: Request
  * GET /api/badges
  */
 app.get('/api/badges', (req: Request, res: Response) => {
-  // Return all possible badges (static definitions)
   const badgeDefinitions = [
     { id: 'veteran-player', name: 'Veteran Player', category: 'gaming', rarity: 'rare', criteria: 'Play 1000+ matches' },
     { id: 'champion', name: 'Champion', category: 'gaming', rarity: 'epic', criteria: '70%+ win rate' },
@@ -303,9 +401,7 @@ app.get('/api/badges', (req: Request, res: Response) => {
   res.json({ badges: badgeDefinitions });
 });
 
-// ============================================
-// ANALYTICS ENDPOINTS
-// ============================================
+// Analytics Endpoints
 
 /**
  * Get guild statistics
@@ -313,8 +409,12 @@ app.get('/api/badges', (req: Request, res: Response) => {
  */
 app.get('/api/guilds/:guildId/stats', (req: Request, res: Response) => {
   const { guildId } = req.params;
-  
-  // Aggregate stats from cached scores
+
+  if (!isValidGuildId(guildId)) {
+    res.status(400).json({ error: 'Invalid guild ID format' });
+    return;
+  }
+
   const guildScores: ReputationScore[] = [];
   for (const [key, score] of scoreCache.entries()) {
     if (key.startsWith(`${guildId}:`)) {
@@ -323,24 +423,23 @@ app.get('/api/guilds/:guildId/stats', (req: Request, res: Response) => {
   }
 
   if (guildScores.length === 0) {
-    return res.json({
+    res.json({
       totalMembers: 0,
       averageScore: 0,
       tierDistribution: {},
       topCategories: [],
     });
+    return;
   }
 
   const totalScore = guildScores.reduce((sum, s) => sum + s.totalScore, 0);
   const avgScore = totalScore / guildScores.length;
 
-  // Tier distribution
   const tierDistribution: Record<string, number> = {};
   for (const score of guildScores) {
     tierDistribution[score.tier] = (tierDistribution[score.tier] || 0) + 1;
   }
 
-  // Average category scores
   const categoryTotals: Record<string, number> = {
     gaming: 0,
     governance: 0,
@@ -349,7 +448,7 @@ app.get('/api/guilds/:guildId/stats', (req: Request, res: Response) => {
     scholarship: 0,
     mentorship: 0,
   };
-  
+
   for (const score of guildScores) {
     for (const [cat, val] of Object.entries(score.breakdown)) {
       categoryTotals[cat] += val;
@@ -371,9 +470,78 @@ app.get('/api/guilds/:guildId/stats', (req: Request, res: Response) => {
   });
 });
 
-// ============================================
-// HEALTH & UTILITY ENDPOINTS
-// ============================================
+// Test Endpoints
+
+/**
+ * Test Arbitrum blockchain data fetching
+ * GET /api/test/arbitrum/:address
+ */
+app.get('/api/test/arbitrum/:address', asyncHandler(async (req: Request, res: Response) => {
+  const { address } = req.params;
+
+  if (!isValidAddress(address)) {
+    res.status(400).json({ success: false, error: 'Invalid wallet address format' });
+    return;
+  }
+
+  try {
+    const data = await getArbitrumData(address);
+    res.json({ success: true, data });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to fetch Arbitrum data';
+    res.status(400).json({ success: false, error: message });
+  }
+}));
+
+/**
+ * Test Snapshot governance data fetching
+ * GET /api/test/snapshot/:address
+ */
+app.get('/api/test/snapshot/:address', asyncHandler(async (req: Request, res: Response) => {
+  const { address } = req.params;
+
+  if (!isValidAddress(address)) {
+    res.status(400).json({ success: false, error: 'Invalid wallet address format' });
+    return;
+  }
+
+  try {
+    const data = await getSnapshotData(address);
+    res.json({ success: true, data });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to fetch Snapshot data';
+    res.status(400).json({ success: false, error: message });
+  }
+}));
+
+/**
+ * Calculate real reputation score from on-chain and governance data
+ * GET /api/reputation/real/:address
+ */
+app.get('/api/reputation/real/:address', asyncHandler(async (req: Request, res: Response) => {
+  const { address } = req.params;
+  const { guildId } = req.query;
+
+  if (!isValidAddress(address)) {
+    res.status(400).json({ success: false, error: 'Invalid wallet address format' });
+    return;
+  }
+
+  if (guildId && !isValidGuildId(guildId as string)) {
+    res.status(400).json({ success: false, error: 'Invalid guild ID format' });
+    return;
+  }
+
+  try {
+    const result = await calculator.calculateRealScore(address, guildId as string);
+    res.json({ success: true, ...result });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to calculate reputation score';
+    res.status(400).json({ success: false, error: message });
+  }
+}));
+
+// Health and Utility Endpoints
 
 /**
  * Health check
@@ -408,6 +576,7 @@ app.get('/', (req: Request, res: Response) => {
       reputation: {
         'GET /api/guilds/:guildId/reputation/:address': 'Get reputation score',
         'POST /api/guilds/:guildId/reputation/batch': 'Batch fetch scores',
+        'GET /api/reputation/real/:address': 'Get real on-chain reputation',
       },
       leaderboard: {
         'GET /api/guilds/:guildId/leaderboard': 'Get leaderboard',
@@ -416,6 +585,10 @@ app.get('/', (req: Request, res: Response) => {
         'GET /api/guilds/:guildId/badges/:address': 'Get user badges',
         'GET /api/badges': 'Get badge definitions',
       },
+      test: {
+        'GET /api/test/arbitrum/:address': 'Test Arbitrum data fetch',
+        'GET /api/test/snapshot/:address': 'Test Snapshot data fetch',
+      },
       health: {
         'GET /health': 'Health check',
       },
@@ -423,24 +596,27 @@ app.get('/', (req: Request, res: Response) => {
   });
 });
 
-// ============================================
-// ERROR HANDLING
-// ============================================
+// Error Handling
+app.use((err: Error, req: Request, res: Response, _next: NextFunction) => {
+  // Log error in development only
+  if (NODE_ENV === 'development') {
+    process.stderr.write(`API Error: ${err.message}\n${err.stack}\n`);
+  }
 
-app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
-  console.error('API Error:', err);
   res.status(500).json({
     error: 'Internal server error',
-    message: process.env.NODE_ENV === 'development' ? err.message : undefined,
+    message: NODE_ENV === 'development' ? err.message : undefined,
   });
 });
 
-// ============================================
-// HELPER FUNCTIONS
-// ============================================
+// 404 handler
+app.use((req: Request, res: Response) => {
+  res.status(404).json({ error: 'Not found' });
+});
 
-function groupBadgesByCategory(badges: any[]): Record<string, any[]> {
-  const grouped: Record<string, any[]> = {};
+// Helper Functions
+function groupBadgesByCategory(badges: Array<{ category: string }>): Record<string, unknown[]> {
+  const grouped: Record<string, unknown[]> = {};
   for (const badge of badges) {
     if (!grouped[badge.category]) {
       grouped[badge.category] = [];
@@ -450,17 +626,13 @@ function groupBadgesByCategory(badges: any[]): Record<string, any[]> {
   return grouped;
 }
 
-// ============================================
-// EXPORT
-// ============================================
-
+// Export for testing
 export { app };
 
 // Start server if run directly
 if (require.main === module) {
-  const PORT = process.env.PORT || 3000;
   app.listen(PORT, () => {
-    console.log(`🎮 Guild Reputation Engine running on port ${PORT}`);
-    console.log(`📊 API docs: http://localhost:${PORT}/`);
+    process.stdout.write(`Guild Reputation Engine running on port ${PORT}\n`);
+    process.stdout.write(`API docs: http://localhost:${PORT}/\n`);
   });
 }

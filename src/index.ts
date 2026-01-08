@@ -75,8 +75,8 @@ if (require.main === module) {
     const guildId = args[2] || 'demo-guild';
     
     getReputationScore(address, guildId).then(score => {
-      console.log('\n🎮 Guild Reputation Score');
-      console.log('========================\n');
+      console.log('\nGuild Reputation Score');
+      console.log('======================\n');
       console.log(`Address: ${score.address}`);
       console.log(`Total Score: ${score.totalScore}`);
       console.log(`Tier: ${score.tier.toUpperCase()}`);
@@ -86,7 +86,7 @@ if (require.main === module) {
       });
       console.log(`\nBadges Earned: ${score.badges.length}`);
       score.badges.forEach(b => {
-        console.log(`  🏆 ${b.name} (${b.rarity})`);
+        console.log(`  - ${b.name} (${b.rarity})`);
       });
     });
   } else {

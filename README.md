@@ -28,7 +28,7 @@ Built for: **Treasure DAO**, **YGG**, **Merit Circle**, **Avocado DAO**, and sim
 
 ```bash
 # Clone the repo
-git clone https://github.com/YourUsername/guild-reputation-engine.git
+git clone https://github.com/TobieTom/guild-reputation-engine.git
 cd guild-reputation-engine
 
 # Install dependencies
